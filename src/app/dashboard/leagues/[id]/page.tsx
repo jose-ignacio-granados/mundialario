@@ -4,7 +4,7 @@ import { useEffect, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/client";
-import { createPost, votePoll, deletePost } from "@/app/actions/posts";
+import { createPost, votePoll, deletePost, togglePostReaction } from "@/app/actions/posts";
 import { leaveLeague, deleteLeague } from "@/app/actions/leagues";
 import {
   Gamepad2,
@@ -54,6 +54,8 @@ type Post = {
   image_url: string | null;
   poll_options: string[] | null;
   created_at: string;
+  is_announcement?: boolean;
+  announcement_type?: 'match_result' | 'matchday_result' | null;
   user?: {
     name: string;
     avatar_url?: string | null;
@@ -64,6 +66,13 @@ type Vote = {
   post_id: string;
   user_id: string;
   option_index: number;
+  created_at: string;
+};
+
+type Reaction = {
+  post_id: string;
+  user_id: string;
+  emoji: string;
   created_at: string;
 };
 
@@ -81,6 +90,8 @@ export default function LeagueDetailPage() {
   const [members, setMembers] = useState<any[]>([]);
   const [posts, setPosts] = useState<Post[]>([]);
   const [votes, setVotes] = useState<Vote[]>([]);
+  const [reactions, setReactions] = useState<Reaction[]>([]);
+  const [activeReactionPostId, setActiveReactionPostId] = useState<string | null>(null);
 
   // UI / Loading States
   const [isLoading, setIsLoading] = useState(true);
@@ -177,7 +188,7 @@ export default function LeagueDetailPage() {
 
     fetchData();
 
-    // Subscribe to realtime updates for posts and votes
+    // Subscribe to realtime updates for posts, votes and reactions
     const channel = supabase
       .channel(`league-${leagueId}-realtime`)
       .on(
@@ -198,6 +209,17 @@ export default function LeagueDetailPage() {
           event: "*",
           schema: "public",
           table: "poll_votes"
+        },
+        () => {
+          fetchData(true);
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "post_reactions"
         },
         () => {
           fetchData(true);
@@ -337,7 +359,7 @@ export default function LeagueDetailPage() {
         });
         setPosts(mappedPosts as Post[]);
 
-        // 6. Fetch Votes for these posts
+        // 6. Fetch Votes and Reactions for these posts
         if (mappedPosts.length > 0) {
           const postIds = mappedPosts.map(p => p.id);
           const { data: votesData } = await supabase
@@ -348,6 +370,18 @@ export default function LeagueDetailPage() {
           if (votesData) {
             setVotes(votesData as Vote[]);
           }
+
+          const { data: reactionsData } = await supabase
+            .from("post_reactions")
+            .select("*")
+            .in("post_id", postIds);
+
+          if (reactionsData) {
+            setReactions(reactionsData as Reaction[]);
+          }
+        } else {
+          setVotes([]);
+          setReactions([]);
         }
       }
 
@@ -597,6 +631,29 @@ export default function LeagueDetailPage() {
     if (diffHrs < 24) return `hace ${diffHrs} ${diffHrs === 1 ? "hora" : "horas"}`;
     if (diffDays === 1) return "ayer";
     return date.toLocaleDateString("es-ES", { day: "numeric", month: "short" });
+  };
+
+  const handleToggleReaction = async (postId: string, emoji: string) => {
+    try {
+      const res = await togglePostReaction(postId, emoji);
+      if (res.error) {
+        alert(res.error);
+      } else {
+        await fetchData(true);
+      }
+    } catch (err) {
+      console.error("Error toggling reaction", err);
+    }
+  };
+
+  const renderFormattedContent = (text: string) => {
+    const parts = text.split(/\*\*([^*]+)\*\*/g);
+    return parts.map((part, i) => {
+      if (i % 2 === 1) {
+        return <strong key={i} className="font-extrabold text-slate-950">{part}</strong>;
+      }
+      return part;
+    });
   };
 
   if (isLoading) {
@@ -1084,137 +1141,249 @@ export default function LeagueDetailPage() {
                     const userVote = postVotes.find(v => v.user_id === profile?.id);
                     const hasVoted = !!userVote;
 
+                    // Reactions grouping
+                    const postReactions = reactions.filter(r => r.post_id === post.id);
+                    const reactionsByEmoji = postReactions.reduce((acc: Record<string, { count: number; users: string[]; hasReacted: boolean }>, r) => {
+                      const emoji = r.emoji;
+                      const isCurrentUser = r.user_id === profile?.id;
+                      if (!acc[emoji]) {
+                        acc[emoji] = { count: 0, users: [], hasReacted: false };
+                      }
+                      acc[emoji].count += 1;
+                      acc[emoji].users.push(r.user_id);
+                      if (isCurrentUser) {
+                        acc[emoji].hasReacted = true;
+                      }
+                      return acc;
+                    }, {});
+
+                    const EMOJIS = ["👍", "😂", "🔥", "😮", "😢", "⚽"];
+
                     return (
                       <div
                         key={post.id}
-                        className="bg-white border border-slate-200 rounded-3xl p-5 shadow-sm space-y-4 hover:border-slate-300 transition-colors"
+                        className={post.is_announcement 
+                          ? "p-[2px] rounded-[26px] bg-gradient-to-r from-amber-400 via-orange-500 to-red-500 shadow-md transition-all hover:scale-[1.005]" 
+                          : ""}
                       >
-                        {/* Header Post */}
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-3">
-                            {/* Author avatar */}
-                            {post.user?.avatar_url ? (
-                              <img
-                                src={post.user.avatar_url}
-                                alt={post.user.name}
-                                className="w-9 h-9 rounded-full object-cover border border-violet-100"
-                              />
-                            ) : (
-                              <div className="w-9 h-9 rounded-full bg-orange-100 text-orange-800 flex items-center justify-center font-black select-none text-xs animate-in fade-in duration-200">
-                                {post.user?.name?.[0]?.toUpperCase() || ""}
+                        <div
+                          className={`bg-white rounded-3xl p-5 space-y-4 relative ${
+                            post.is_announcement 
+                              ? "bg-gradient-to-b from-amber-50/60 to-white/90" 
+                              : "border border-slate-200 hover:border-slate-300 transition-colors shadow-sm"
+                          }`}
+                        >
+                          {/* Header Post */}
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              {/* Author avatar */}
+                              {post.is_announcement ? (
+                                <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-amber-500 to-red-500 text-white flex items-center justify-center font-black select-none text-sm shadow-md shadow-orange-500/20">
+                                  🏆
+                                </div>
+                              ) : post.user?.avatar_url ? (
+                                <Link href={`/dashboard/users/${post.user_id}`}>
+                                  <img
+                                    src={post.user.avatar_url}
+                                    alt={post.user.name}
+                                    className="w-9 h-9 rounded-full object-cover border border-violet-100 hover:opacity-85 transition-opacity"
+                                  />
+                                </Link>
+                              ) : (
+                                <Link href={`/dashboard/users/${post.user_id}`}>
+                                  <div className="w-9 h-9 rounded-full bg-orange-100 text-orange-800 hover:bg-orange-200 flex items-center justify-center font-black select-none text-xs animate-in fade-in duration-200 hover:opacity-85 transition-opacity">
+                                    {post.user?.name?.[0]?.toUpperCase() || ""}
+                                  </div>
+                                </Link>
+                              )}
+                              <div>
+                                <h4 className="text-xs font-black text-slate-800 leading-tight">
+                                  {post.is_announcement ? (
+                                    <span className="bg-gradient-to-r from-amber-600 to-red-600 bg-clip-text text-transparent font-black">
+                                      Mundialario Oficial
+                                    </span>
+                                  ) : (
+                                    <Link href={`/dashboard/users/${post.user_id}`} className="hover:text-violet-750 transition-colors font-black">
+                                      {post.user?.name}
+                                    </Link>
+                                  )}
+                                  {" "}
+                                  {!post.is_announcement && isAuthor && (
+                                    <span className="bg-violet-100 text-violet-850 font-bold text-[8px] px-1.5 py-0.2 rounded uppercase ml-1">
+                                      Tú
+                                    </span>
+                                  )}
+                                </h4>
                               </div>
-                            )}
-                            <div>
-                              <h4 className="text-xs font-black text-slate-800 leading-tight">
-                                {post.user?.name}{" "}
-                                {isAuthor && (
-                                  <span className="bg-violet-100 text-violet-800 font-bold text-[8px] px-1.5 py-0.2 rounded uppercase ml-1">
-                                    Tú
-                                  </span>
-                                )}
-                              </h4>
+                            </div>
+
+                            <div className="flex items-center gap-2 select-none">
+                              {post.is_announcement && (
+                                <span className="bg-amber-105 text-amber-850 text-[8px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider">
+                                  Anuncio
+                                </span>
+                              )}
+                              <span className="text-[10px] text-slate-400 font-bold uppercase">
+                                {relativeTime}
+                              </span>
+                              {canDelete && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeletePost(post.id)}
+                                  className="p-1 rounded-full text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
+                                  title="Eliminar publicación"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-2 select-none">
-                            <span className="text-[10px] text-slate-400 font-bold uppercase">
-                              {relativeTime}
-                            </span>
-                            {canDelete && (
+                          {/* Content Post */}
+                          <p className="text-xs sm:text-sm text-slate-800 font-medium leading-relaxed break-words whitespace-pre-line">
+                            {renderFormattedContent(post.content)}
+                          </p>
+
+                          {/* Image Render */}
+                          {post.image_url && (
+                            <div className="rounded-2xl overflow-hidden border border-slate-100 bg-slate-50">
+                              <img
+                                src={post.image_url}
+                                alt="Trash Talk Media"
+                                className="w-full h-auto max-h-96 object-contain"
+                                loading="lazy"
+                              />
+                            </div>
+                          )}
+
+                          {/* Poll Render */}
+                          {post.poll_options && (
+                            <div className="bg-slate-50/50 border border-slate-200/60 rounded-2xl p-4 space-y-2.5">
+                              <div className="flex items-center justify-between text-[9px] font-black text-slate-400 uppercase tracking-wider select-none mb-1">
+                                <span className="flex items-center gap-1">
+                                  <BarChart2 className="w-3.5 h-3.5 text-violet-600" /> Encuesta de Liga
+                                </span>
+                                <span>{totalVotes} {totalVotes === 1 ? "voto" : "votos"}</span>
+                              </div>
+
+                              <div className="space-y-2">
+                                {post.poll_options.map((option, idx) => {
+                                  const voteCount = optionVotes[idx] || 0;
+                                  const percentage = totalVotes > 0 ? Math.round((voteCount / totalVotes) * 100) : 0;
+                                  const isUserChoice = userVote?.option_index === idx;
+                                  const isWinning = voteCount === maxVoteValue && maxVoteValue > 0;
+
+                                  if (hasVoted) {
+                                    // Render result bars
+                                    return (
+                                      <div
+                                        key={idx}
+                                        className="relative flex items-center justify-between p-3 rounded-xl border border-slate-100 bg-white overflow-hidden text-xs select-none shadow-xs"
+                                      >
+                                        {/* PROGRESS FILL ANIMATION */}
+                                        <div
+                                          className={`absolute left-0 top-0 bottom-0 transition-all duration-700 ease-out ${
+                                            isWinning ? "bg-lime-400/20" : "bg-purple-500/10"
+                                          }`}
+                                          style={{ width: `${percentage}%` }}
+                                        />
+
+                                        <span className="relative font-bold text-slate-800 flex items-center gap-1.5 min-w-0">
+                                          <span className="truncate">{option}</span>
+                                          {isUserChoice && (
+                                            <span className="shrink-0 text-[8px] bg-violet-600 text-white font-extrabold px-1.5 py-0.5 rounded-full uppercase scale-90">
+                                              Tu voto
+                                            </span>
+                                          )}
+                                        </span>
+
+                                        <span className="relative font-black text-slate-900 shrink-0">
+                                          {percentage}% <span className="text-[10px] text-slate-400 font-semibold">({voteCount})</span>
+                                        </span>
+                                      </div>
+                                    );
+                                  } else {
+                                    // Render voting buttons
+                                    const isVoting = votingMap[post.id];
+                                    return (
+                                      <button
+                                        key={idx}
+                                        type="button"
+                                        onClick={() => handleVote(post.id, idx)}
+                                        disabled={isVoting}
+                                        className="w-full text-left p-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 hover:border-slate-300 text-xs font-bold text-slate-700 transition-all active:scale-[0.99] cursor-pointer shadow-xs disabled:opacity-50"
+                                      >
+                                        {option}
+                                      </button>
+                                    );
+                                  }
+                                })}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Emoji reactions section */}
+                          <div className="flex flex-wrap gap-2 items-center pt-2 border-t border-slate-50">
+                            {Object.entries(reactionsByEmoji).map(([emoji, data]: [string, any]) => (
+                              <button
+                                key={emoji}
+                                onClick={() => handleToggleReaction(post.id, emoji)}
+                                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold border transition-all ${
+                                  data.hasReacted
+                                    ? "bg-violet-50 border-violet-200 text-violet-750 font-extrabold"
+                                    : "bg-slate-50 border-slate-200 text-slate-655 hover:bg-slate-100"
+                                }`}
+                                title={data.hasReacted ? "Quitar reacción" : "Reaccionar"}
+                              >
+                                <span>{emoji}</span>
+                                <span className="text-[10px]">{data.count}</span>
+                              </button>
+                            ))}
+
+                            {/* Button to add reaction */}
+                            <div className="relative">
                               <button
                                 type="button"
-                                onClick={() => handleDeletePost(post.id)}
-                                className="p-1 rounded-full text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
-                                title="Eliminar publicación"
+                                onClick={() => setActiveReactionPostId(activeReactionPostId === post.id ? null : post.id)}
+                                className="p-1 rounded-full border border-slate-200 hover:bg-slate-50 text-slate-400 hover:text-slate-600 transition-colors flex items-center justify-center cursor-pointer"
+                                title="Agregar reacción"
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
+                                <Plus className="w-3.5 h-3.5" />
                               </button>
-                            )}
+
+                              {/* Popover */}
+                              {activeReactionPostId === post.id && (
+                                <>
+                                  <div
+                                    className="fixed inset-0 z-40"
+                                    onClick={() => setActiveReactionPostId(null)}
+                                  />
+                                  <div className="absolute left-0 bottom-full mb-2 z-50 bg-white border border-slate-200 rounded-2xl shadow-xl p-2 flex items-center gap-1.5 animate-in slide-in-from-bottom-2 duration-150">
+                                    {EMOJIS.map(emoji => {
+                                      const hasReacted = reactionsByEmoji[emoji]?.hasReacted;
+                                      return (
+                                        <button
+                                          key={emoji}
+                                          type="button"
+                                          onClick={() => {
+                                            handleToggleReaction(post.id, emoji);
+                                            setActiveReactionPostId(null);
+                                          }}
+                                          className={`w-8 h-8 flex items-center justify-center text-lg rounded-xl hover:bg-slate-105 active:scale-90 transition-all ${
+                                            hasReacted ? "bg-violet-50" : "hover:bg-slate-100"
+                                          }`}
+                                        >
+                                          {emoji}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </>
+                              )}
+                            </div>
                           </div>
+
                         </div>
-
-                        {/* Content Post */}
-                        <p className="text-xs sm:text-sm text-slate-800 font-medium leading-relaxed break-words whitespace-pre-line">
-                          {post.content}
-                        </p>
-
-                        {/* Image Render */}
-                        {post.image_url && (
-                          <div className="rounded-2xl overflow-hidden border border-slate-100 bg-slate-50">
-                            <img
-                              src={post.image_url}
-                              alt="Trash Talk Media"
-                              className="w-full h-auto max-h-96 object-contain"
-                              loading="lazy"
-                            />
-                          </div>
-                        )}
-
-                        {/* Poll Render */}
-                        {post.poll_options && (
-                          <div className="bg-slate-50/50 border border-slate-200/60 rounded-2xl p-4 space-y-2.5">
-                            <div className="flex items-center justify-between text-[9px] font-black text-slate-400 uppercase tracking-wider select-none mb-1">
-                              <span className="flex items-center gap-1">
-                                <BarChart2 className="w-3.5 h-3.5 text-violet-600" /> Encuesta de Liga
-                              </span>
-                              <span>{totalVotes} {totalVotes === 1 ? "voto" : "votos"}</span>
-                            </div>
-
-                            <div className="space-y-2">
-                              {post.poll_options.map((option, idx) => {
-                                const voteCount = optionVotes[idx] || 0;
-                                const percentage = totalVotes > 0 ? Math.round((voteCount / totalVotes) * 100) : 0;
-                                const isUserChoice = userVote?.option_index === idx;
-                                const isWinning = voteCount === maxVoteValue && maxVoteValue > 0;
-
-                                if (hasVoted) {
-                                  // Render result bars
-                                  return (
-                                    <div
-                                      key={idx}
-                                      className="relative flex items-center justify-between p-3 rounded-xl border border-slate-100 bg-white overflow-hidden text-xs select-none shadow-xs"
-                                    >
-                                      {/* PROGRESS FILL ANIMATION */}
-                                      <div
-                                        className={`absolute left-0 top-0 bottom-0 transition-all duration-700 ease-out ${
-                                          isWinning ? "bg-lime-400/20" : "bg-purple-500/10"
-                                        }`}
-                                        style={{ width: `${percentage}%` }}
-                                      />
-
-                                      <span className="relative font-bold text-slate-800 flex items-center gap-1.5 min-w-0">
-                                        <span className="truncate">{option}</span>
-                                        {isUserChoice && (
-                                          <span className="shrink-0 text-[8px] bg-violet-600 text-white font-extrabold px-1.5 py-0.5 rounded-full uppercase scale-90">
-                                            Tu voto
-                                          </span>
-                                        )}
-                                      </span>
-
-                                      <span className="relative font-black text-slate-900 shrink-0">
-                                        {percentage}% <span className="text-[10px] text-slate-400 font-semibold">({voteCount})</span>
-                                      </span>
-                                    </div>
-                                  );
-                                } else {
-                                  // Render voting buttons
-                                  const isVoting = votingMap[post.id];
-                                  return (
-                                    <button
-                                      key={idx}
-                                      type="button"
-                                      onClick={() => handleVote(post.id, idx)}
-                                      disabled={isVoting}
-                                      className="w-full text-left p-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 hover:border-slate-300 text-xs font-bold text-slate-700 transition-all active:scale-[0.99] cursor-pointer shadow-xs disabled:opacity-50"
-                                    >
-                                      {option}
-                                    </button>
-                                  );
-                                }
-                              })}
-                            </div>
-                          </div>
-                        )}
                       </div>
                     );
                   })
@@ -1249,7 +1418,6 @@ export default function LeagueDetailPage() {
                   {members.map((member, index) => {
                     const isMe = member.id === profile?.id;
                     const isOwner = member.id === league?.owner_id;
-
                     return (
                       <div
                         key={member.id}
@@ -1263,37 +1431,39 @@ export default function LeagueDetailPage() {
                             {index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : index + 1}
                           </span>
 
-                          {/* Member Avatar */}
-                          {member.avatar_url ? (
-                            <img
-                              src={member.avatar_url}
-                              alt={member.name}
-                              className="w-7 h-7 rounded-full object-cover border border-violet-100 shrink-0"
-                            />
-                          ) : (
-                            <div className="w-7 h-7 rounded-full bg-violet-100 text-violet-700 flex items-center justify-center font-black text-[10px] shrink-0">
-                              {member.name?.[0]?.toUpperCase() || ""}
-                            </div>
-                          )}
+                          <Link href={`/dashboard/users/${member.id}`} className="flex items-center gap-3 min-w-0 group">
+                            {/* Member Avatar */}
+                            {member.avatar_url ? (
+                              <img
+                                src={member.avatar_url}
+                                alt={member.name}
+                                className="w-7 h-7 rounded-full object-cover border border-violet-100 shrink-0 group-hover:opacity-80 transition-opacity"
+                              />
+                            ) : (
+                              <div className="w-7 h-7 rounded-full bg-violet-100 text-violet-700 flex items-center justify-center font-black text-[10px] shrink-0 group-hover:bg-violet-200 transition-colors">
+                                {member.name?.[0]?.toUpperCase() || ""}
+                              </div>
+                            )}
 
-                          <div className="min-w-0">
-                            <span className="text-xs sm:text-sm font-bold text-slate-800 flex items-center gap-1.5">
-                              <span className="truncate">{member.name}</span>
-                              {isMe && (
-                                <span className="shrink-0 text-[8px] bg-violet-200 text-violet-800 font-extrabold px-1.5 py-0.2 rounded uppercase">
-                                  Tú
-                                </span>
-                              )}
-                              {isOwner && (
-                                <span className="shrink-0 text-[8px] bg-amber-100 text-amber-800 font-extrabold px-1.5 py-0.2 rounded uppercase flex items-center gap-0.5" title="Creador de la liga">
-                                  👑 Creador
-                                </span>
-                              )}
-                            </span>
-                            <span className="block text-[8px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">
-                              {member.id}
-                            </span>
-                          </div>
+                            <div className="min-w-0">
+                              <span className="text-xs sm:text-sm font-bold text-slate-800 flex items-center gap-1.5 group-hover:text-violet-750 transition-colors">
+                                <span className="truncate">{member.name}</span>
+                                {isMe && (
+                                  <span className="shrink-0 text-[8px] bg-violet-200 text-violet-850 font-extrabold px-1.5 py-0.2 rounded uppercase">
+                                    Tú
+                                  </span>
+                                )}
+                                {isOwner && (
+                                  <span className="shrink-0 text-[8px] bg-amber-100 text-amber-800 font-extrabold px-1.5 py-0.2 rounded uppercase flex items-center gap-0.5" title="Creador de la liga">
+                                    👑 Creador
+                                  </span>
+                                )}
+                              </span>
+                              <span className="block text-[8px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">
+                                {member.id}
+                              </span>
+                            </div>
+                          </Link>
                         </div>
 
                         <span className="text-xs sm:text-sm font-black text-slate-900 shrink-0">

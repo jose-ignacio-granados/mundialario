@@ -1540,14 +1540,26 @@ export default function DashboardPage() {
                                                   {index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : index + 1}
                                                 </td>
                                                 <td className="py-2.5 px-3 text-slate-800">
-                                                  <Link
-                                                    href={`/dashboard/users/${member.id}`}
-                                                    className="hover:text-violet-700 hover:underline transition-all cursor-pointer font-extrabold"
-                                                  >
-                                                    {member.name}
-                                                  </Link>{" "}
-                                                  {isMe && <span className="text-[9px] bg-violet-200 text-violet-800 font-extrabold px-1.5 py-0.2 rounded uppercase">Tú</span>}
-                                                  <span className="block text-[8px] text-slate-400 font-bold uppercase tracking-wider">{member.id}</span>
+                                                  <div className="flex items-center gap-2">
+                                                    <Link href={`/dashboard/users/${member.id}`} className="flex items-center gap-2 group">
+                                                      {member.avatar_url ? (
+                                                        <img
+                                                          src={member.avatar_url}
+                                                          alt={member.name}
+                                                          className="w-5 h-5 rounded-full object-cover border border-violet-100 group-hover:scale-105 transition-transform"
+                                                        />
+                                                      ) : (
+                                                        <div className="w-5 h-5 rounded-full bg-violet-100 text-violet-700 flex items-center justify-center font-black text-[8px] group-hover:scale-105 transition-transform">
+                                                          {member.name?.[0]?.toUpperCase() || ""}
+                                                        </div>
+                                                      )}
+                                                      <span className="group-hover:text-violet-700 group-hover:underline font-extrabold transition-colors">
+                                                        {member.name}
+                                                      </span>
+                                                    </Link>
+                                                    {isMe && <span className="text-[8px] bg-violet-200 text-violet-850 font-extrabold px-1.5 py-0.2 rounded uppercase">Tú</span>}
+                                                  </div>
+                                                  <span className="block text-[8px] text-slate-400 font-bold uppercase tracking-wider mt-0.5 ml-7">{member.id}</span>
                                                 </td>
                                                 <td className="py-2.5 px-4 text-right font-black text-slate-900">
                                                   {member.points}
@@ -1815,30 +1827,27 @@ export default function DashboardPage() {
                                       {index === 0 ? "🥇 1" : index === 1 ? "🥈 2" : index === 2 ? "🥉 3" : index + 1}
                                     </td>
                                     <td className="py-3.5 px-4 font-bold text-slate-900">
-                                      <div className="flex items-center gap-2">
+                                      <Link href={`/dashboard/users/${user.id}`} className="flex items-center gap-2 group">
                                         {user.avatar_url ? (
                                           <img
                                             src={user.avatar_url}
                                             alt={user.name}
-                                            className="w-6 h-6 rounded-full object-cover border border-violet-100"
+                                            className="w-6 h-6 rounded-full object-cover border border-violet-100 group-hover:scale-105 transition-transform"
                                           />
                                         ) : (
-                                          <div className="w-6 h-6 rounded-full bg-violet-100 text-violet-700 flex items-center justify-center font-black text-[9px]">
+                                          <div className="w-6 h-6 rounded-full bg-violet-100 text-violet-700 flex items-center justify-center font-black text-[9px] group-hover:scale-105 transition-transform">
                                             {user.name?.[0]?.toUpperCase() || ""}
                                           </div>
                                         )}
-                                        <Link
-                                          href={`/dashboard/users/${user.id}`}
-                                          className="hover:text-violet-700 hover:underline transition-all cursor-pointer font-extrabold"
-                                        >
+                                        <span className="group-hover:text-violet-700 group-hover:underline font-extrabold transition-colors">
                                           {user.name}
-                                        </Link>
+                                        </span>
                                         {isMe && (
                                           <span className="ml-1 bg-violet-200 text-violet-800 font-black text-[9px] px-2 py-0.5 rounded uppercase">
                                             Tú
                                           </span>
                                         )}
-                                      </div>
+                                      </Link>
                                     </td>
                                     <td className="py-3.5 px-6 text-right font-black text-violet-700 text-base">
                                       {user.points} pts

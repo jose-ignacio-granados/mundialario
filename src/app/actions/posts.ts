@@ -222,3 +222,91 @@ export async function deletePost(postId: string) {
   revalidatePath(`/dashboard/leagues/${post.league_id}`);
   return { success: true };
 }
+
+export async function togglePostReaction(postId: string, emoji: string) {
+  if (!emoji || !emoji.trim()) {
+    return { error: "El emoji es obligatorio." };
+  }
+
+  const supabase = await createClient();
+
+  // 1. Get current user session
+  const { data: { user: authUser }, error: authError } = await supabase.auth.getUser();
+  if (authError || !authUser) {
+    return { error: "No estás autenticado." };
+  }
+
+  // 2. Resolve internal user ID
+  const { data: dbUser, error: dbUserError } = await supabase
+    .from("users")
+    .select("id")
+    .eq("auth_id", authUser.id)
+    .single();
+
+  if (dbUserError || !dbUser) {
+    return { error: "Error al resolver la información de tu usuario." };
+  }
+
+  const userId = dbUser.id;
+
+  // 3. Get post to verify league membership
+  const { data: post, error: postError } = await supabase
+    .from("league_posts")
+    .select("league_id")
+    .eq("id", postId)
+    .single();
+
+  if (postError || !post) {
+    return { error: "No se encontró la publicación." };
+  }
+
+  const { data: isMember } = await supabase
+    .from("league_members")
+    .select("league_id")
+    .eq("league_id", post.league_id)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (!isMember) {
+    return { error: "No tienes de permiso en la liga de esta publicación." };
+  }
+
+  // 4. Check if reaction already exists
+  const { data: existingReaction } = await supabase
+    .from("post_reactions")
+    .select("post_id")
+    .eq("post_id", postId)
+    .eq("user_id", userId)
+    .eq("emoji", emoji.trim())
+    .maybeSingle();
+
+  if (existingReaction) {
+    // Delete reaction
+    const { error: deleteError } = await supabase
+      .from("post_reactions")
+      .delete()
+      .eq("post_id", postId)
+      .eq("user_id", userId)
+      .eq("emoji", emoji.trim());
+
+    if (deleteError) {
+      return { error: `Error al eliminar reacción: ${deleteError.message}` };
+    }
+  } else {
+    // Insert reaction
+    const { error: insertError } = await supabase
+      .from("post_reactions")
+      .insert({
+        post_id: postId,
+        user_id: userId,
+        emoji: emoji.trim()
+      });
+
+    if (insertError) {
+      return { error: `Error al agregar reacción: ${insertError.message}` };
+    }
+  }
+
+  revalidatePath(`/dashboard/leagues/${post.league_id}`);
+  return { success: true };
+}

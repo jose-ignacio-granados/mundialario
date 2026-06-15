@@ -10,7 +10,8 @@ import {
   calculateMatchPointsAction,
   getCountries,
   saveCountry,
-  editMatchDetails
+  editMatchDetails,
+  sendMatchdayAnnouncementAction
 } from "@/app/actions/admin";
 import {
   Gamepad2,
@@ -71,6 +72,36 @@ export default function AdminPage() {
   const [matchDate, setMatchDate] = useState("");
   const [matchTime, setMatchTime] = useState("");
   const [isCreatingMatch, setIsCreatingMatch] = useState(false);
+
+  // Cierre de Jornada state
+  const [selectedMatchdayDate, setSelectedMatchdayDate] = useState("");
+  const [isSendingMatchday, setIsSendingMatchday] = useState(false);
+
+  const handleSendMatchdayAnnouncementSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedMatchdayDate) {
+      setActionError("Por favor selecciona una fecha de la jornada.");
+      return;
+    }
+
+    setIsSendingMatchday(true);
+    setActionError(null);
+    setActionSuccess(null);
+
+    try {
+      const res = await sendMatchdayAnnouncementAction(selectedMatchdayDate);
+      if (res.error) {
+        setActionError(res.error);
+      } else {
+        setActionSuccess(`¡Cierre de jornada enviado con éxito para el ${selectedMatchdayDate}! Se publicaron podios en las ligas.`);
+        setSelectedMatchdayDate("");
+      }
+    } catch (err) {
+      setActionError("Error al enviar el cierre de jornada.");
+    } finally {
+      setIsSendingMatchday(false);
+    }
+  };
 
   // Countries states
   const [countries, setCountries] = useState<any[]>([]);
@@ -923,6 +954,82 @@ export default function AdminPage() {
                     )}
                   </button>
                 </form>
+              </div>
+
+              {/* Cierre de Jornada Form */}
+              <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm mt-6">
+                <div className="mb-4">
+                  <h3 className="text-base font-black text-slate-800 uppercase tracking-tight flex items-center gap-2">
+                    <Trophy className="w-4 h-4 text-violet-750" />
+                    <span>Cierre de Jornada</span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400 font-semibold mt-1">
+                    Calcula los puntajes acumulados de un día y publica el podio final en el Trash Talk de cada liga.
+                  </p>
+                </div>
+
+                {(() => {
+                  const calculatedDates = Array.from(
+                    new Set(
+                      matches
+                        .filter(m => m.score_a !== null && m.score_b !== null)
+                        .map(m => m.match_date)
+                    )
+                  ).sort().reverse();
+
+                  return (
+                    <form onSubmit={handleSendMatchdayAnnouncementSubmit} className="space-y-4">
+                      <div>
+                        <label htmlFor="matchdayDateSelect" className="block text-[10px] text-slate-500 font-black uppercase tracking-wider mb-1">
+                          Seleccionar Fecha de Jornada
+                        </label>
+                        {calculatedDates.length === 0 ? (
+                          <div className="text-xs font-semibold text-slate-400 bg-slate-50 border border-slate-100 rounded-xl p-3 text-center select-none">
+                            No hay fechas con partidos calculados disponibles.
+                          </div>
+                        ) : (
+                          <select
+                            id="matchdayDateSelect"
+                            required
+                            value={selectedMatchdayDate}
+                            onChange={e => setSelectedMatchdayDate(e.target.value)}
+                            className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-850 text-xs font-black uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all"
+                          >
+                            <option value="">-- Seleccionar Fecha --</option>
+                            {calculatedDates.map(date => {
+                              const dateObj = new Date(date + "T00:00:00");
+                              const formatted = dateObj.toLocaleDateString("es-ES", {
+                                weekday: "long",
+                                day: "numeric",
+                                month: "long"
+                              });
+                              return (
+                                <option key={date} value={date}>
+                                  {formatted.charAt(0).toUpperCase() + formatted.slice(1)} ({date})
+                                </option>
+                              );
+                            })}
+                          </select>
+                        )}
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={isSendingMatchday || calculatedDates.length === 0}
+                        className="w-full flex justify-center items-center py-3 px-4 rounded-xl text-xs font-black uppercase tracking-wider text-violet-950 bg-lime-400 hover:bg-lime-500 shadow-md hover:shadow-lg transition-all active:scale-[0.98] disabled:opacity-50 cursor-pointer"
+                      >
+                        {isSendingMatchday ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin text-violet-950" />
+                            <span>Enviando cierre...</span>
+                          </>
+                        ) : (
+                          <span>Publicar Cierre de Jornada</span>
+                        )}
+                      </button>
+                    </form>
+                  );
+                })()}
               </div>
             </div>
 

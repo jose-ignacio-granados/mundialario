@@ -13,6 +13,16 @@ function generateMatchId(): string {
   return result;
 }
 
+// Helper to generate a custom Post ID (PST-XXXXXX)
+function generatePostId(): string {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let result = "PST-";
+  for (let i = 0; i < 6; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+
 // Helper to verify admin role
 async function verifyAdmin(supabase: any) {
   const { data: { user: authUser }, error: authError } = await supabase.auth.getUser();
@@ -134,7 +144,7 @@ export async function calculateMatchPointsAction(matchId: string) {
   const supabase = await createClient();
 
   try {
-    await verifyAdmin(supabase);
+    const dbUser = await verifyAdmin(supabase);
 
     // Call stored procedure calculate_match_points(p_match_id)
     const { error } = await supabase.rpc("calculate_match_points", {
@@ -145,11 +155,213 @@ export async function calculateMatchPointsAction(matchId: string) {
       return { error: `Error al calcular puntos de predicciones: ${error.message}` };
     }
 
+    // --- AUTOMATIC LEAGUE ANNOUNCEMENTS ---
+    try {
+      const { data: match } = await supabase
+        .from("matches")
+        .select("team_a, team_b, score_a, score_b")
+        .eq("id", matchId)
+        .single();
+
+      if (match && match.score_a !== null && match.score_b !== null) {
+        const { data: leagues } = await supabase
+          .from("leagues")
+          .select("id, name");
+
+        if (leagues) {
+          for (const league of leagues) {
+            // Fetch members of this league
+            const { data: members } = await supabase
+              .from("league_members")
+              .select("user_id")
+              .eq("league_id", league.id);
+
+            if (members && members.length > 0) {
+              const memberIds = members.map((m: any) => m.user_id);
+
+              // Fetch predictions for this match for these members
+              const { data: preds } = await supabase
+                .from("predictions")
+                .select(`
+                  points,
+                  penalty,
+                  pred_a,
+                  pred_b,
+                  user_id,
+                  users (
+                    name
+                  )
+                `)
+                .eq("match_id", matchId)
+                .in("user_id", memberIds);
+
+              if (preds && preds.length > 0) {
+                const sortedPreds = preds
+                  .map((p: any) => {
+                    const user = Array.isArray(p.users) ? p.users[0] : p.users;
+                    const netPoints = (p.points || 0) - (p.penalty || 0);
+                    return {
+                      name: user?.name || "Usuario",
+                      netPoints,
+                      pred: `${p.pred_a} - ${p.pred_b}`,
+                      points: p.points,
+                      penalty: p.penalty
+                    };
+                  })
+                  .sort((a, b) => b.netPoints - a.netPoints);
+
+                let content = `📊 **RESULTADO DE PARTIDO**\n⚽ **${match.team_a} ${match.score_a} - ${match.score_b} ${match.team_b}**\n\n🏆 **PODIO DEL ENCUENTRO**:\n`;
+                const medals = ["🥇", "🥈", "🥉"];
+                const podium = sortedPreds.slice(0, 3);
+
+                podium.forEach((p, idx) => {
+                  const penaltyText = p.penalty > 0 ? ` (penalización -${p.penalty} pts)` : "";
+                  content += `${medals[idx]} **${p.name}**: ${p.netPoints} pts [Pronóstico: ${p.pred}]${penaltyText}\n`;
+                });
+
+                await supabase
+                  .from("league_posts")
+                  .insert({
+                    id: generatePostId(),
+                    league_id: league.id,
+                    user_id: dbUser.id,
+                    content: content,
+                    is_announcement: true,
+                    announcement_type: "match_result"
+                  });
+              }
+            }
+          }
+        }
+      }
+    } catch (annError) {
+      console.error("Error generating automatic league announcements:", annError);
+    }
+    // -------------------------------------
+
     revalidatePath("/dashboard");
     revalidatePath("/dashboard/admin");
     return { success: true };
   } catch (err: any) {
     return { error: err.message || "Error al verificar permisos de administrador." };
+  }
+}
+
+export async function sendMatchdayAnnouncementAction(matchDate: string) {
+  if (!matchDate) {
+    return { error: "La fecha de la jornada es obligatoria." };
+  }
+
+  const supabase = await createClient();
+
+  try {
+    const dbUser = await verifyAdmin(supabase);
+
+    // Fetch matches on this date
+    const { data: matchesOnDate, error: matchesError } = await supabase
+      .from("matches")
+      .select("id, team_a, team_b, score_a, score_b")
+      .eq("match_date", matchDate);
+
+    if (matchesError || !matchesOnDate || matchesOnDate.length === 0) {
+      return { error: `No se encontraron partidos registrados para la fecha ${matchDate}.` };
+    }
+
+    // Check if there are any uncalculated matches
+    const uncalculated = matchesOnDate.filter((m: any) => m.score_a === null || m.score_b === null);
+    if (uncalculated.length > 0) {
+      return { error: `Hay partidos en esta fecha que aún no tienen marcador registrado.` };
+    }
+
+    const matchIds = matchesOnDate.map((m: any) => m.id);
+
+    // Get all leagues
+    const { data: leagues } = await supabase
+      .from("leagues")
+      .select("id, name");
+
+    if (!leagues || leagues.length === 0) {
+      return { error: "No hay ligas registradas." };
+    }
+
+    let announcementsSent = 0;
+
+    for (const league of leagues) {
+      // Get league members
+      const { data: members } = await supabase
+        .from("league_members")
+        .select("user_id")
+        .eq("league_id", league.id);
+
+      if (members && members.length > 0) {
+        const memberIds = members.map((m: any) => m.user_id);
+
+        // Fetch predictions on these matches for members of this league
+        const { data: preds } = await supabase
+          .from("predictions")
+          .select(`
+            points,
+            penalty,
+            user_id,
+            users (
+              name
+            )
+          `)
+          .in("match_id", matchIds)
+          .in("user_id", memberIds);
+
+        if (preds && preds.length > 0) {
+          // Aggregate points by user
+          const userScoresMap: Record<string, { name: string; score: number }> = {};
+          
+          preds.forEach((p: any) => {
+            const user = Array.isArray(p.users) ? p.users[0] : p.users;
+            if (user) {
+              if (!userScoresMap[p.user_id]) {
+                userScoresMap[p.user_id] = { name: user.name, score: 0 };
+              }
+              userScoresMap[p.user_id].score += (p.points || 0) - (p.penalty || 0);
+            }
+          });
+
+          const sortedScores = Object.values(userScoresMap)
+            .sort((a, b) => b.score - a.score);
+
+          if (sortedScores.length > 0) {
+            let content = `🏆 **CIERRE DE JORNADA - ${matchDate}**\n🏁 Resultados acumulados de los partidos de hoy:\n\n`;
+            const medals = ["🥇", "🥈", "🥉"];
+            const podium = sortedScores.slice(0, 3);
+
+            podium.forEach((p, idx) => {
+              content += `${medals[idx]} **${p.name}**: ${p.score} pts obtenidos hoy\n`;
+            });
+
+            content += "\n¡Felicidades a los líderes de la jornada! ⚽🔥";
+
+            const { error: postError } = await supabase
+              .from("league_posts")
+              .insert({
+                id: generatePostId(),
+                league_id: league.id,
+                user_id: dbUser.id,
+                content: content,
+                is_announcement: true,
+                announcement_type: "matchday_result"
+              });
+
+            if (!postError) {
+              announcementsSent++;
+            }
+          }
+        }
+      }
+    }
+
+    revalidatePath("/dashboard");
+    revalidatePath("/dashboard/admin");
+    return { success: true, count: announcementsSent };
+  } catch (err: any) {
+    return { error: err.message || "Error al realizar cierre de jornada." };
   }
 }
 
