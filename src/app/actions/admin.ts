@@ -195,44 +195,50 @@ export async function calculateMatchPointsAction(matchId: string) {
                 .eq("match_id", matchId)
                 .in("user_id", memberIds);
 
-              if (preds && preds.length > 0) {
-                const sortedPreds = preds
-                  .map((p: any) => {
-                    const user = Array.isArray(p.users) ? p.users[0] : p.users;
-                    const netPoints = (p.points || 0) - (p.penalty || 0);
-                    return {
-                      name: user?.name || "Usuario",
-                      netPoints,
-                      pred: `${p.pred_a} - ${p.pred_b}`,
-                      points: p.points,
-                      penalty: p.penalty
-                    };
-                  })
-                  .sort((a, b) => b.netPoints - a.netPoints);
+              const validPreds = (preds || [])
+                .map((p: any) => {
+                  const user = Array.isArray(p.users) ? p.users[0] : p.users;
+                  const netPoints = (p.points || 0) - (p.penalty || 0);
+                  return {
+                    name: user?.name || "Usuario",
+                    netPoints,
+                    pred: `${p.pred_a} - ${p.pred_b}`,
+                    points: p.points,
+                    penalty: p.penalty,
+                    isDefault: p.pred_a === -1 && p.pred_b === -1
+                  };
+                })
+                .filter((p: any) => !p.isDefault)
+                .sort((a, b) => b.netPoints - a.netPoints);
 
-                let content = `📊 **RESULTADO DE PARTIDO**\n⚽ **${match.team_a} ${match.score_a} - ${match.score_b} ${match.team_b}**\n\n🏆 **PODIO DEL ENCUENTRO**:\n`;
+              let content = `📊 **RESULTADO DE PARTIDO**\n⚽ **${match.team_a} ${match.score_a} - ${match.score_b} ${match.team_b}**\n\n`;
+
+              if (validPreds.length === 0) {
+                content += `📭 **Sin pronósticos**: Ningún miembro de la liga realizó un pronóstico para este partido.`;
+              } else {
+                content += `🏆 **PODIO DEL ENCUENTRO**:\n`;
                 const medals = ["🥇", "🥈", "🥉"];
-                const podium = sortedPreds.slice(0, 3);
+                const podium = validPreds.slice(0, 3);
 
                 podium.forEach((p, idx) => {
                   const penaltyText = p.penalty > 0 ? ` (penalización -${p.penalty} pts)` : "";
                   content += `${medals[idx]} **${p.name}**: ${p.netPoints} pts [Pronóstico: ${p.pred}]${penaltyText}\n`;
                 });
+              }
 
-                const { error: postError } = await supabase
-                  .from("league_posts")
-                  .insert({
-                    id: generatePostId(),
-                    league_id: league.id,
-                    user_id: dbUser.id,
-                    content: content,
-                    is_announcement: true,
-                    announcement_type: "match_result"
-                  });
+              const { error: postError } = await supabase
+                .from("league_posts")
+                .insert({
+                  id: generatePostId(),
+                  league_id: league.id,
+                  user_id: dbUser.id,
+                  content: content,
+                  is_announcement: true,
+                  announcement_type: "match_result"
+                });
 
-                if (postError) {
-                  console.error("Error inserting match result announcement:", postError);
-                }
+              if (postError) {
+                console.error(`Error inserting match result announcement for league ${league.id}:`, postError);
               }
             }
           }
@@ -306,6 +312,8 @@ export async function sendMatchdayAnnouncementAction(matchDate: string) {
           .select(`
             points,
             penalty,
+            pred_a,
+            pred_b,
             user_id,
             users (
               name
@@ -314,51 +322,55 @@ export async function sendMatchdayAnnouncementAction(matchDate: string) {
           .in("match_id", matchIds)
           .in("user_id", memberIds);
 
-        if (preds && preds.length > 0) {
-          // Aggregate points by user
-          const userScoresMap: Record<string, { name: string; score: number }> = {};
-          
+        // Aggregate points by user, ignoring default penalty predictions
+        const userScoresMap: Record<string, { name: string; score: number }> = {};
+        
+        if (preds) {
           preds.forEach((p: any) => {
             const user = Array.isArray(p.users) ? p.users[0] : p.users;
-            if (user) {
+            const isDefault = p.pred_a === -1 && p.pred_b === -1;
+            if (user && !isDefault) {
               if (!userScoresMap[p.user_id]) {
                 userScoresMap[p.user_id] = { name: user.name, score: 0 };
               }
               userScoresMap[p.user_id].score += (p.points || 0) - (p.penalty || 0);
             }
           });
+        }
 
-          const sortedScores = Object.values(userScoresMap)
-            .sort((a, b) => b.score - a.score);
+        const sortedScores = Object.values(userScoresMap)
+          .sort((a, b) => b.score - a.score);
 
-          if (sortedScores.length > 0) {
-            let content = `🏆 **CIERRE DE JORNADA - ${matchDate}**\n🏁 Resultados acumulados de los partidos de hoy:\n\n`;
-            const medals = ["🥇", "🥈", "🥉"];
-            const podium = sortedScores.slice(0, 3);
+        let content = `🏆 **CIERRE DE JORNADA - ${matchDate}**\n🏁 Resultados acumulados de los partidos de hoy:\n\n`;
 
-            podium.forEach((p, idx) => {
-              content += `${medals[idx]} **${p.name}**: ${p.score} pts obtenidos hoy\n`;
-            });
+        if (sortedScores.length === 0) {
+          content += `📭 **Sin actividad**: Ningún miembro de la liga realizó pronósticos para los partidos de esta jornada.`;
+        } else {
+          const medals = ["🥇", "🥈", "🥉"];
+          const podium = sortedScores.slice(0, 3);
 
-            content += "\n¡Felicidades a los líderes de la jornada! ⚽🔥";
+          podium.forEach((p, idx) => {
+            content += `${medals[idx]} **${p.name}**: ${p.score} pts obtenidos hoy\n`;
+          });
 
-            const { error: postError } = await supabase
-              .from("league_posts")
-              .insert({
-                id: generatePostId(),
-                league_id: league.id,
-                user_id: dbUser.id,
-                content: content,
-                is_announcement: true,
-                announcement_type: "matchday_result"
-              });
+          content += "\n¡Felicidades a los líderes de la jornada! ⚽🔥";
+        }
 
-            if (!postError) {
-              announcementsSent++;
-            } else {
-              console.error("Error inserting matchday result announcement:", postError);
-            }
-          }
+        const { error: postError } = await supabase
+          .from("league_posts")
+          .insert({
+            id: generatePostId(),
+            league_id: league.id,
+            user_id: dbUser.id,
+            content: content,
+            is_announcement: true,
+            announcement_type: "matchday_result"
+          });
+
+        if (!postError) {
+          announcementsSent++;
+        } else {
+          console.error(`Error inserting matchday result announcement for league ${league.id}:`, postError);
         }
       }
     }
